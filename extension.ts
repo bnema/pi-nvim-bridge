@@ -12,6 +12,8 @@ const SOCKETS_DIR = path.join(os.tmpdir(), "pi-nvim-bridge-sockets");
 const LATEST_LINK = path.join(os.tmpdir(), "pi-nvim-bridge-latest.sock");
 const MAX_STORED_TEXT_BYTES = 64 * 1024;
 const DEFAULT_TOOL_MAX_BYTES = 24 * 1024;
+const STATUS_ICON_CONNECTED = "";
+const STATUS_ICON_WAITING = "○";
 
 type DeliveryMode = "steer" | "followUp";
 
@@ -231,15 +233,21 @@ function respond(conn: net.Socket, payload: unknown): void {
 	}
 }
 
-function updateStatus(snapshot: EditorSnapshot | undefined, ctx: ExtensionContext | undefined): void {
+function updateStatus(snapshot: EditorSnapshot | undefined, ctx: ExtensionContext | undefined, options?: { clear?: boolean }): void {
 	if (!ctx?.hasUI) return;
-	if (!snapshot) {
+	if (options?.clear) {
 		ctx.ui.setStatus(PACKAGE_NAME, undefined);
 		return;
 	}
+	const theme = ctx.ui.theme;
+	if (!snapshot) {
+		ctx.ui.setStatus(PACKAGE_NAME, `${theme.fg("dim", STATUS_ICON_WAITING)} ${theme.fg("dim", "nvim")}`);
+		return;
+	}
 	const cursor = snapshot.cursor ? `:${snapshot.cursor.line}` : "";
-	const selected = snapshot.selection?.active ? " sel" : "";
-	ctx.ui.setStatus(PACKAGE_NAME, `nvim ${relativeFile(snapshot)}${cursor}${selected}`);
+	const selected = snapshot.selection?.active ? theme.fg("accent", " sel") : "";
+	const file = relativeFile(snapshot);
+	ctx.ui.setStatus(PACKAGE_NAME, `${theme.fg("success", STATUS_ICON_CONNECTED)} ${theme.fg("dim", file)}${theme.fg("muted", cursor)}${selected}`);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -426,7 +434,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		updateStatus(undefined, ctx);
+		updateStatus(undefined, ctx, { clear: true });
 		cleanup();
 	});
 
