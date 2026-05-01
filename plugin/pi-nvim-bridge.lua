@@ -1,0 +1,3 @@
+-- pi-nvim-bridge intentionally does not auto-start.
+-- Configure it from your Neovim plugin manager with:
+-- require("pi-nvim-bridge").setup()

@@ -1,0 +1,48 @@
+{
+  "name": "pi-nvim-bridge",
+  "version": "0.1.0",
+  "description": "Automatic context bridge between pi coding agent sessions and Neovim.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "neovim",
+    "nvim"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bnema/pi-nvim-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bnema/pi-nvim-bridge/issues"
+  },
+  "homepage": "https://github.com/bnema/pi-nvim-bridge#readme",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./extension.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "latest",
+    "@mariozechner/pi-coding-agent": "latest",
+    "@sinclair/typebox": "latest",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "files": [
+    "extension.ts",
+    "lua/",
+    "plugin/",
+    "README.md",
+    "LICENSE"
+  ]
+}
