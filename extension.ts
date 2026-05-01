@@ -165,6 +165,11 @@ function relativeFile(snapshot: EditorSnapshot | undefined): string {
 	return snapshot?.buffer?.relativePath || snapshot?.buffer?.path || "(no file)";
 }
 
+function statusFile(snapshot: EditorSnapshot | undefined): string {
+	const file = relativeFile(snapshot);
+	return file === "(no file)" ? file : path.basename(file);
+}
+
 function formatDiagnosticCounts(counts: Record<string, number> | undefined): string | undefined {
 	if (!counts) return undefined;
 	const parts = Object.entries(counts)
@@ -190,6 +195,43 @@ function buildSummary(snapshot: EditorSnapshot | undefined): string {
 	if (diagnosticCounts) lines.push(`- diagnostics: ${diagnosticCounts}`);
 	if (snapshot.updatedAt) lines.push(`- synced at: ${snapshot.updatedAt}`);
 	return lines.join("\n");
+}
+
+function getActiveSelection(snapshot: EditorSnapshot | undefined): (RangeSnapshot & { active?: boolean }) | undefined {
+	const selection = snapshot?.selection;
+	if (!selection?.active) return undefined;
+	if (typeof selection.startLine !== "number" || typeof selection.endLine !== "number") return undefined;
+	if (typeof selection.text !== "string" || selection.text.length === 0) return undefined;
+	return selection as RangeSnapshot & { active?: boolean };
+}
+
+function selectionDigest(snapshot: EditorSnapshot | undefined): string | undefined {
+	const selection = getActiveSelection(snapshot);
+	if (!selection) return undefined;
+	return hashText(
+		[
+			snapshot?.buffer?.path ?? "",
+			snapshot?.buffer?.changedtick ?? "",
+			selection.startLine,
+			selection.endLine,
+			selection.text ?? "",
+		].join("\0"),
+	);
+}
+
+function buildSelectionContext(snapshot: EditorSnapshot | undefined): string | undefined {
+	const selection = getActiveSelection(snapshot);
+	if (!selection) return undefined;
+	const file = relativeFile(snapshot);
+	const filetype = snapshot?.buffer?.filetype ?? "text";
+	const truncated = selection.textTruncated ? " (selection text was truncated by pi-nvim-bridge)" : "";
+	return [
+		`Neovim visual selection from ${file} lines ${selection.startLine}-${selection.endLine}${truncated}:`,
+		"",
+		`\`\`\`${filetype}`,
+		selection.text ?? "",
+		"```",
+	].join("\n");
 }
 
 function clipSection(title: string, text: string | undefined, maxBytes: number): string {
@@ -246,7 +288,7 @@ function updateStatus(snapshot: EditorSnapshot | undefined, ctx: ExtensionContex
 	}
 	const cursor = snapshot.cursor ? `:${snapshot.cursor.line}` : "";
 	const selected = snapshot.selection?.active ? theme.fg("accent", " sel") : "";
-	const file = relativeFile(snapshot);
+	const file = statusFile(snapshot);
 	ctx.ui.setStatus(PACKAGE_NAME, `${theme.fg("success", STATUS_ICON_CONNECTED)} ${theme.fg("dim", file)}${theme.fg("muted", cursor)}${selected}`);
 }
 
@@ -256,6 +298,7 @@ export default function (pi: ExtensionAPI) {
 	let manifestPath: string | undefined;
 	let latestCtx: ExtensionContext | undefined;
 	let latestSnapshot: EditorSnapshot | undefined;
+	let lastInjectedSelectionDigest: string | undefined;
 	let isIdle = true;
 
 	function cleanup(): void {
@@ -417,11 +460,24 @@ export default function (pi: ExtensionAPI) {
 		updateStatus(latestSnapshot, ctx);
 	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("before_agent_start", async (_event, ctx) => {
 		latestCtx = ctx;
-		if (!latestSnapshot) return;
+		const digest = selectionDigest(latestSnapshot);
+		if (!digest) {
+			lastInjectedSelectionDigest = undefined;
+			return;
+		}
+		if (digest === lastInjectedSelectionDigest) return;
+		const selectionContext = buildSelectionContext(latestSnapshot);
+		if (!selectionContext) return;
+		lastInjectedSelectionDigest = digest;
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n${buildSummary(latestSnapshot)}\n\nWhen the user refers to the current editor, cursor, selection, or visible code, use the editor_context tool for the fuller synced snapshot before assuming stale file contents.`,
+			message: {
+				customType: "pi-nvim-bridge-selection",
+				content: selectionContext,
+				display: false,
+				details: { digest, file: relativeFile(latestSnapshot), selection: latestSnapshot?.selection },
+			},
 		};
 	});
 

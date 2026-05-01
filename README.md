@@ -2,7 +2,7 @@
 
 Automatic context bridge between [pi](https://github.com/badlogic/pi-mono) and Neovim.
 
-This is a replacement for prompt-only `pi-nvim` style plugins. Neovim continuously syncs editor state to the active pi session without triggering LLM turns. Pi injects a compact summary into the next turn and exposes an `editor_context` tool for the full synced snapshot.
+This is a replacement for prompt-only `pi-nvim` style plugins. Neovim continuously syncs editor state to the active pi session without triggering LLM turns. When a visual selection is active, Pi injects the selected file/range/text into the next turn automatically. It also exposes an `editor_context` tool for the full synced snapshot.
 
 ## What syncs
 
@@ -15,6 +15,16 @@ This is a replacement for prompt-only `pi-nvim` style plugins. Neovim continuous
 
 Explicit prompts sent from Neovim default to `steer` while pi is working.
 
+## Automatic selection context
+
+If Neovim has an active visual selection when a Pi turn starts, the bridge injects a hidden context message containing:
+
+- selected file
+- selected line range
+- selected text in a fenced code block
+
+If there is no active selection, nothing is injected automatically. To avoid repeated context spam, the same selection is injected only once while it remains active. The dedupe key includes file path, buffer changedtick, start line, end line, and selected text.
+
 ## Install
 
 ### Pi side
@@ -26,7 +36,8 @@ pi install git:github.com/bnema/pi-nvim-bridge
 For local development:
 
 ```bash
-cd /home/brice/dev/projects/pi-nvim-bridge
+git clone https://github.com/bnema/pi-nvim-bridge.git
+cd pi-nvim-bridge
 npm install
 pi -e .
 ```
@@ -50,7 +61,7 @@ For local development:
 
 ```lua
 {
-  dir = "/home/brice/dev/projects/pi-nvim-bridge",
+  dir = "~/dev/pi-nvim-bridge",
   config = function()
     require("pi-nvim-bridge").setup()
   end,
@@ -133,7 +144,8 @@ If pi is idle, this starts immediately. If pi is already processing, `streamingB
 - Discovery prefers exact `workspaceRoot`, then `cwd`, then most recent live session.
 - Context updates are debounced and deduplicated in Neovim.
 - Pi stores only the latest editor snapshot in memory.
-- Prompt context is injected through `before_agent_start`; detailed text is available via `editor_context`.
+- Active visual selections are injected once through `before_agent_start` as hidden context messages.
+- Detailed synced state is available via `editor_context`.
 
 ## License
 
