@@ -1,6 +1,7 @@
 local M = {}
 
 local uv = vim.uv or vim.loop
+local path_sep = package.config:sub(1, 1)
 
 M.config = {
   socket_path = nil,
@@ -11,6 +12,7 @@ M.config = {
   include_visible_text = true,
   include_selection_text = true,
   include_diagnostics = true,
+  include_codediff = true,
   max_visible_bytes = 12000,
   max_selection_bytes = 24000,
   default_keymaps = true,
@@ -45,6 +47,10 @@ end
 
 local function workspace_root()
   local buf_name = vim.api.nvim_buf_get_name(0)
+  local codediff_root = buf_name:match("^codediff:///(.-)///")
+  if codediff_root then
+    return codediff_root ~= "" and codediff_root or "/"
+  end
   local start = buf_name ~= "" and vim.fs.dirname(buf_name) or current_cwd()
   local root = vim.fs.root(start, { ".git" })
   return root or current_cwd()
@@ -262,6 +268,126 @@ local function collect_diagnostics(bufnr)
   return items, counts
 end
 
+local function is_abs_path(value)
+  return type(value) == "string" and (value:sub(1, 1) == "/" or value:match("^%a:[/\\]"))
+end
+
+local function join_root_path(root, rel)
+  if not rel or rel == "" then
+    return nil
+  end
+  if is_abs_path(rel) then
+    return rel
+  end
+  if root and root ~= "" then
+    local last = root:sub(-1)
+    local separator = (last == "/" or last == "\\") and "" or path_sep
+    return root .. separator .. rel
+  end
+  return rel
+end
+
+local function copy_range(range)
+  if not range then return nil end
+  return {
+    startLine = range.start_line,
+    endLineExclusive = range.end_line,
+  }
+end
+
+local function range_overlaps(selection_start, selection_end, hunk_range)
+  if not hunk_range or not hunk_range.start_line or not hunk_range.end_line then
+    return false
+  end
+  return selection_start < hunk_range.end_line and selection_end >= hunk_range.start_line
+end
+
+local function collect_codediff_context(bufnr, selection, cursor_line)
+  if not M.config.include_codediff then
+    return nil
+  end
+  local ok, lifecycle = pcall(require, "codediff.ui.lifecycle")
+  if not ok or not lifecycle then
+    return nil
+  end
+
+  local tabpage = nil
+  if lifecycle.find_tabpage_by_buffer then
+    tabpage = lifecycle.find_tabpage_by_buffer(bufnr)
+  end
+  tabpage = tabpage or vim.api.nvim_get_current_tabpage()
+
+  local session = lifecycle.get_session and lifecycle.get_session(tabpage) or nil
+  if not session then
+    return nil
+  end
+
+  local side
+  if bufnr == session.original_bufnr then
+    side = "original"
+  elseif bufnr == session.modified_bufnr then
+    side = "modified"
+  elseif bufnr == session.result_bufnr then
+    side = "result"
+  else
+    return nil
+  end
+
+  local current_path, current_revision
+  if side == "original" then
+    current_path = session.original_path
+    current_revision = session.original_revision
+  elseif side == "modified" then
+    current_path = session.modified_path
+    current_revision = session.modified_revision
+  else
+    current_path = session.modified_path or session.original_path
+    current_revision = "WORKING"
+  end
+
+  local start_line = selection and selection.active and selection.startLine or cursor_line
+  local end_line = selection and selection.active and selection.endLine or cursor_line
+  local hunks = {}
+  local diff_result = session.stored_diff_result or {}
+  for index, hunk in ipairs(diff_result.changes or {}) do
+    local side_range = side == "original" and hunk.original or hunk.modified
+    if side == "result" then
+      side_range = hunk.modified
+    end
+    if range_overlaps(start_line, end_line, side_range) then
+      table.insert(hunks, {
+        index = index,
+        original = copy_range(hunk.original),
+        modified = copy_range(hunk.modified),
+        opposite = side == "original" and copy_range(hunk.modified) or copy_range(hunk.original),
+      })
+      if #hunks >= 50 then
+        break
+      end
+    end
+  end
+
+  return {
+    active = true,
+    mode = session.mode,
+    layout = session.layout,
+    side = side,
+    gitRoot = session.git_root,
+    originalPath = session.original_path,
+    modifiedPath = session.modified_path,
+    originalRevision = session.original_revision,
+    modifiedRevision = session.modified_revision,
+    currentPath = current_path,
+    currentAbsolutePath = join_root_path(session.git_root, current_path),
+    currentRevision = current_revision,
+    selectedLineRange = {
+      startLine = start_line,
+      endLine = end_line,
+    },
+    hunks = hunks,
+  }
+end
+
 function M.snapshot(reason)
   local bufnr = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(bufnr)
@@ -277,6 +403,8 @@ function M.snapshot(reason)
   end
 
   local diagnostics, diagnostic_counts = collect_diagnostics(bufnr)
+  local selection = capture_selection(bufnr, mode)
+  local codediff = collect_codediff_context(bufnr, selection, cursor[1])
 
   M.state.seq = M.state.seq + 1
   return {
@@ -299,7 +427,7 @@ function M.snapshot(reason)
       line = cursor[1],
       column = cursor[2] + 1,
     },
-    selection = capture_selection(bufnr, mode),
+    selection = selection,
     visibleRange = {
       startLine = w0,
       endLine = wend,
@@ -308,6 +436,7 @@ function M.snapshot(reason)
     },
     diagnostics = diagnostics,
     diagnosticCounts = diagnostic_counts,
+    codediff = codediff,
   }
 end
 
@@ -404,6 +533,27 @@ function M.ping()
   end)
 end
 
+function M.disconnect(reason)
+  if M.state.sync_timer then
+    M.state.sync_timer:stop()
+  end
+
+  local socket_path = M.get_socket_path()
+  if not socket_path then
+    return
+  end
+  local payload = vim.json.encode({ type = "disconnect", clientId = M.state.client_id, reason = reason or "disconnect" }) .. "\n"
+
+  local ok, chan = pcall(vim.fn.sockconnect, "pipe", socket_path, { rpc = false })
+  if ok and type(chan) == "number" and chan > 0 then
+    pcall(vim.fn.chansend, chan, payload)
+    pcall(vim.fn.chanclose, chan)
+    return
+  end
+
+  M.send_raw({ type = "disconnect", clientId = M.state.client_id, reason = reason or "disconnect" }, function() end)
+end
+
 function M.select_session()
   local sessions = M.list_sessions()
   if #sessions == 0 then
@@ -455,6 +605,13 @@ function M.setup(opts)
     group = group,
     callback = function(args)
       M.schedule_sync(args.event)
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function(args)
+      M.disconnect(args.event)
     end,
   })
 

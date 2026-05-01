@@ -12,6 +12,7 @@ This is a replacement for prompt-only `pi-nvim` style plugins. Neovim continuous
 - visible window range and text
 - buffer dirty/changedtick state
 - Neovim diagnostics summary and first diagnostics
+- optional `codediff.nvim` context when the active buffer belongs to a CodeDiff review tab
 
 Explicit prompts sent from Neovim default to `steer` while pi is working.
 
@@ -23,7 +24,19 @@ If Neovim has an active visual selection when a Pi turn starts, the bridge injec
 - selected line range
 - selected text in a fenced code block
 
-If there is no active selection, nothing is injected automatically. To avoid repeated context spam, the same selection is injected only once while it remains active. The dedupe key includes file path, buffer changedtick, start line, end line, and selected text.
+If there is no active selection, nothing is injected automatically. To avoid repeated context spam, the same selection is injected only once while it remains active. The dedupe key includes file path, buffer changedtick, CodeDiff side/path/revision when present, start line, end line, and selected text.
+
+## CodeDiff compatibility
+
+If [`codediff.nvim`](https://github.com/esmuellert/codediff.nvim) is installed and the active buffer is part of a CodeDiff review tab, `pi-nvim-bridge` enriches the synced snapshot with:
+
+- CodeDiff side (`original`, `modified`, or `result`)
+- layout/mode
+- original and modified paths/revisions
+- current selected side path/revision
+- overlapping diff hunks for the active selection/cursor
+
+This integration is optional and silent: if `codediff.nvim` is not installed, no CodeDiff modules are loaded and no CodeDiff metadata is sent.
 
 ## Install
 
@@ -138,6 +151,14 @@ Context sync only updates Pi-side bridge state. It does **not** trigger an LLM t
 ```
 
 If pi is idle, this starts immediately. If pi is already processing, `streamingBehavior` maps to Pi's `deliverAs` option (`steer` or `followUp`).
+
+### Disconnect
+
+```json
+{ "type": "disconnect", "clientId": "nvim-123", "reason": "VimLeavePre" }
+```
+
+Neovim sends this on shutdown so Pi can clear stale editor context and reset the status bar.
 
 ## Design notes
 

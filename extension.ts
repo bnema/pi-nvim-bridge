@@ -46,6 +46,35 @@ type DiagnosticSnapshot = {
 	source?: string;
 };
 
+type CodeDiffLineRange = {
+	startLine?: number;
+	endLineExclusive?: number;
+};
+
+type CodeDiffHunk = {
+	index?: number;
+	original?: CodeDiffLineRange;
+	modified?: CodeDiffLineRange;
+	opposite?: CodeDiffLineRange;
+};
+
+type CodeDiffSnapshot = {
+	active?: boolean;
+	mode?: string;
+	layout?: string;
+	side?: string;
+	gitRoot?: string;
+	originalPath?: string;
+	modifiedPath?: string;
+	originalRevision?: string;
+	modifiedRevision?: string;
+	currentPath?: string;
+	currentAbsolutePath?: string;
+	currentRevision?: string;
+	selectedLineRange?: { startLine?: number; endLine?: number };
+	hunks?: CodeDiffHunk[];
+};
+
 type EditorSnapshot = {
 	type?: string;
 	clientId?: string;
@@ -60,6 +89,7 @@ type EditorSnapshot = {
 	visibleRange?: RangeSnapshot;
 	diagnostics?: DiagnosticSnapshot[];
 	diagnosticCounts?: Record<string, number>;
+	codediff?: CodeDiffSnapshot;
 	updatedAt?: string;
 };
 
@@ -128,6 +158,61 @@ function sanitizeRange(range: EditorSnapshot["selection"] | EditorSnapshot["visi
 	};
 }
 
+function stringField(source: Record<string, unknown>, key: string): string | undefined {
+	return typeof source[key] === "string" ? source[key] : undefined;
+}
+
+function numberField(source: Record<string, unknown>, key: string): number | undefined {
+	return typeof source[key] === "number" ? source[key] : undefined;
+}
+
+function positiveIntegerField(source: Record<string, unknown>, key: string): number | undefined {
+	const value = numberField(source, key);
+	return value !== undefined && Number.isInteger(value) && value >= 1 ? value : undefined;
+}
+
+function sanitizeCodeDiffLineRange(value: unknown): CodeDiffLineRange | undefined {
+	if (!isObject(value)) return undefined;
+	const startLine = positiveIntegerField(value, "startLine");
+	const endLineExclusive = positiveIntegerField(value, "endLineExclusive");
+	if (startLine === undefined || endLineExclusive === undefined || endLineExclusive < startLine) return undefined;
+	return { startLine, endLineExclusive };
+}
+
+function sanitizeCodeDiffSnapshot(value: unknown): CodeDiffSnapshot | undefined {
+	if (!isObject(value) || value.active !== true) return undefined;
+	const selectedLineRange = isObject(value.selectedLineRange)
+		? {
+				startLine: positiveIntegerField(value.selectedLineRange, "startLine"),
+				endLine: positiveIntegerField(value.selectedLineRange, "endLine"),
+			}
+		: undefined;
+	const hunks = Array.isArray(value.hunks)
+		? value.hunks.slice(0, 50).filter(isObject).map((hunk) => ({
+				index: numberField(hunk, "index"),
+				original: sanitizeCodeDiffLineRange(hunk.original),
+				modified: sanitizeCodeDiffLineRange(hunk.modified),
+				opposite: sanitizeCodeDiffLineRange(hunk.opposite),
+			}))
+		: undefined;
+	return {
+		active: true,
+		mode: stringField(value, "mode"),
+		layout: stringField(value, "layout"),
+		side: stringField(value, "side"),
+		gitRoot: stringField(value, "gitRoot"),
+		originalPath: stringField(value, "originalPath"),
+		modifiedPath: stringField(value, "modifiedPath"),
+		originalRevision: stringField(value, "originalRevision"),
+		modifiedRevision: stringField(value, "modifiedRevision"),
+		currentPath: stringField(value, "currentPath"),
+		currentAbsolutePath: stringField(value, "currentAbsolutePath"),
+		currentRevision: stringField(value, "currentRevision"),
+		...(selectedLineRange?.startLine !== undefined && selectedLineRange.endLine !== undefined ? { selectedLineRange } : {}),
+		...(hunks ? { hunks } : {}),
+	};
+}
+
 function sanitizeSnapshot(raw: unknown, fallbackWorkspaceRoot: string): EditorSnapshot {
 	if (!isObject(raw)) throw new Error("context_sync payload must be an object");
 	const buffer = isObject(raw.buffer) ? (raw.buffer as BufferSnapshot) : undefined;
@@ -157,6 +242,7 @@ function sanitizeSnapshot(raw: unknown, fallbackWorkspaceRoot: string): EditorSn
 		visibleRange: sanitizeRange(visibleRangeRaw),
 		diagnostics,
 		diagnosticCounts: isObject(raw.diagnosticCounts) ? (raw.diagnosticCounts as Record<string, number>) : undefined,
+		codediff: sanitizeCodeDiffSnapshot(raw.codediff),
 		updatedAt: new Date().toISOString(),
 	};
 }
@@ -178,6 +264,58 @@ function formatDiagnosticCounts(counts: Record<string, number> | undefined): str
 	return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
+function revisionLabel(revision: string | undefined): string {
+	return revision || "working tree";
+}
+
+function formatExclusiveRange(range: CodeDiffLineRange | undefined): string | undefined {
+	if (!range || typeof range.startLine !== "number" || typeof range.endLineExclusive !== "number") return undefined;
+	const displayEnd = Math.max(range.startLine, range.endLineExclusive - 1);
+	return range.startLine === displayEnd ? `${range.startLine}` : `${range.startLine}-${displayEnd}`;
+}
+
+function buildCodeDiffSummary(snapshot: EditorSnapshot | undefined): string | undefined {
+	const codediff = snapshot?.codediff;
+	if (!codediff?.active) return undefined;
+	const parts = [`${codediff.side ?? "unknown side"}`];
+	if (codediff.layout) parts.push(`${codediff.layout} layout`);
+	if (codediff.mode) parts.push(`${codediff.mode} mode`);
+	if (codediff.currentPath) parts.push(`${revisionLabel(codediff.currentRevision)}:${codediff.currentPath}`);
+	const hunkCount = codediff.hunks?.length ?? 0;
+	if (hunkCount > 0) parts.push(`${hunkCount} overlapping hunk${hunkCount === 1 ? "" : "s"}`);
+	return parts.join(", ");
+}
+
+function buildCodeDiffContext(snapshot: EditorSnapshot | undefined): string[] {
+	const codediff = snapshot?.codediff;
+	if (!codediff?.active) return [];
+	const lines = ["CodeDiff context:"];
+	lines.push(`- side: ${codediff.side ?? "unknown"}${codediff.layout ? ` (${codediff.layout})` : ""}`);
+	if (codediff.gitRoot) lines.push(`- git root: ${codediff.gitRoot}`);
+	if (codediff.currentPath) lines.push(`- selected side: ${revisionLabel(codediff.currentRevision)} ${codediff.currentPath}`);
+	if (codediff.selectedLineRange?.startLine !== undefined && codediff.selectedLineRange.endLine !== undefined) {
+		const range =
+			codediff.selectedLineRange.startLine === codediff.selectedLineRange.endLine
+				? `${codediff.selectedLineRange.startLine}`
+				: `${codediff.selectedLineRange.startLine}-${codediff.selectedLineRange.endLine}`;
+		lines.push(`- selected range: ${range}`);
+	}
+	if (codediff.originalPath || codediff.modifiedPath) {
+		lines.push(`- original: ${revisionLabel(codediff.originalRevision)} ${codediff.originalPath ?? "(unknown path)"}`);
+		lines.push(`- modified: ${revisionLabel(codediff.modifiedRevision)} ${codediff.modifiedPath ?? "(unknown path)"}`);
+	}
+	const hunks = codediff.hunks ?? [];
+	if (hunks.length > 0) {
+		lines.push("- overlapping hunks:");
+		for (const hunk of hunks.slice(0, 10)) {
+			const original = formatExclusiveRange(hunk.original) ?? "?";
+			const modified = formatExclusiveRange(hunk.modified) ?? "?";
+			lines.push(`  - #${hunk.index ?? "?"}: original ${original} ↔ modified ${modified}`);
+		}
+	}
+	return lines;
+}
+
 function buildSummary(snapshot: EditorSnapshot | undefined): string {
 	if (!snapshot) return "No Neovim editor context has been synced yet.";
 	const lines = ["Current Neovim context:"];
@@ -193,6 +331,8 @@ function buildSummary(snapshot: EditorSnapshot | undefined): string {
 	if (snapshot.visibleRange) lines.push(`- visible range: lines ${snapshot.visibleRange.startLine}-${snapshot.visibleRange.endLine}`);
 	const diagnosticCounts = formatDiagnosticCounts(snapshot.diagnosticCounts);
 	if (diagnosticCounts) lines.push(`- diagnostics: ${diagnosticCounts}`);
+	const codeDiffSummary = buildCodeDiffSummary(snapshot);
+	if (codeDiffSummary) lines.push(`- codediff: ${codeDiffSummary}`);
 	if (snapshot.updatedAt) lines.push(`- synced at: ${snapshot.updatedAt}`);
 	return lines.join("\n");
 }
@@ -212,6 +352,9 @@ function selectionDigest(snapshot: EditorSnapshot | undefined): string | undefin
 		[
 			snapshot?.buffer?.path ?? "",
 			snapshot?.buffer?.changedtick ?? "",
+			snapshot?.codediff?.side ?? "",
+			snapshot?.codediff?.currentPath ?? "",
+			snapshot?.codediff?.currentRevision ?? "",
 			selection.startLine,
 			selection.endLine,
 			selection.text ?? "",
@@ -227,6 +370,7 @@ function buildSelectionContext(snapshot: EditorSnapshot | undefined): string | u
 	const truncated = selection.textTruncated ? " (selection text was truncated by pi-nvim-bridge)" : "";
 	return [
 		`Neovim visual selection from ${file} lines ${selection.startLine}-${selection.endLine}${truncated}:`,
+		...buildCodeDiffContext(snapshot),
 		"",
 		`\`\`\`${filetype}`,
 		selection.text ?? "",
@@ -286,10 +430,12 @@ function updateStatus(snapshot: EditorSnapshot | undefined, ctx: ExtensionContex
 		ctx.ui.setStatus(PACKAGE_NAME, `${theme.fg("dim", STATUS_ICON_WAITING)} ${theme.fg("dim", "nvim")}`);
 		return;
 	}
-	const cursor = snapshot.cursor ? `:${snapshot.cursor.line}` : "";
-	const selected = snapshot.selection?.active ? theme.fg("accent", " sel") : "";
+	let location = snapshot.cursor ? `:${snapshot.cursor.line}` : "";
+	if (snapshot.selection?.active && typeof snapshot.selection.startLine === "number" && typeof snapshot.selection.endLine === "number") {
+		location = snapshot.selection.startLine === snapshot.selection.endLine ? `:${snapshot.selection.startLine}` : `:${snapshot.selection.startLine}-${snapshot.selection.endLine}`;
+	}
 	const file = statusFile(snapshot);
-	ctx.ui.setStatus(PACKAGE_NAME, `${theme.fg("success", STATUS_ICON_CONNECTED)} ${theme.fg("dim", file)}${theme.fg("muted", cursor)}${selected}`);
+	ctx.ui.setStatus(PACKAGE_NAME, `${theme.fg("success", STATUS_ICON_CONNECTED)} ${theme.fg("dim", file)}${theme.fg("muted", location)}`);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -331,7 +477,7 @@ export default function (pi: ExtensionAPI) {
 			sessionFile: ctx.sessionManager.getSessionFile(),
 			socket: socketPath,
 			startedAt: new Date().toISOString(),
-			capabilities: ["context_sync", "prompt", "editor_context", "streamingBehavior"],
+			capabilities: ["context_sync", "prompt", "editor_context", "streamingBehavior", "disconnect"],
 		};
 		fs.writeFileSync(`${socketPath}.info`, JSON.stringify(manifest));
 		manifestPath = `${socketPath}.info`;
@@ -367,6 +513,17 @@ export default function (pi: ExtensionAPI) {
 
 		if (type === "get_context") {
 			respond(conn, { ok: true, type: "context", snapshot: latestSnapshot, summary: buildSummary(latestSnapshot) });
+			return;
+		}
+
+		if (type === "disconnect") {
+			const clientId = typeof parsed.clientId === "string" ? parsed.clientId : undefined;
+			if (!clientId || !latestSnapshot?.clientId || clientId === latestSnapshot.clientId) {
+				latestSnapshot = undefined;
+				lastInjectedSelectionDigest = undefined;
+				updateStatus(undefined, latestCtx);
+			}
+			respond(conn, { ok: true, type: "disconnect_ack" });
 			return;
 		}
 
