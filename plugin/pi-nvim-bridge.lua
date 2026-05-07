@@ -1,3 +1,7 @@
--- pi-nvim-bridge intentionally does not auto-start.
--- Configure it from your Neovim plugin manager with:
--- require("pi-nvim-bridge").setup()
+-- pi-nvim-bridge intentionally does not call setup() from this plugin file.
+-- Lazy plugin managers must load it early so setup() can register
+-- the autocommands that drive auto-sync. Use one of:
+--   event = { "BufReadPost", "BufNewFile" }
+--   lazy = false
+-- Then from your config:
+--   require("pi-nvim-bridge").setup()

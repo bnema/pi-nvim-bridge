@@ -62,6 +62,7 @@ With lazy.nvim:
 ```lua
 {
   "bnema/pi-nvim-bridge",
+  event = { "BufReadPost", "BufNewFile" },  -- load on file open so auto-sync starts
   config = function()
     require("pi-nvim-bridge").setup({
       default_streaming_behavior = "steer",
@@ -75,11 +76,14 @@ For local development:
 ```lua
 {
   dir = "~/dev/pi-nvim-bridge",
+  event = { "BufReadPost", "BufNewFile" },  -- load on file open so auto-sync starts
   config = function()
     require("pi-nvim-bridge").setup()
   end,
 }
 ```
+
+> **Note:** If you lazy-load this plugin only with `cmd` or `keys`, it will not load on file open, so automatic context sync will not start until you invoke one of those commands/keymaps. Keep the file-open `event` trigger above, or set `lazy = false` for eager loading.
 
 ## Commands
 
