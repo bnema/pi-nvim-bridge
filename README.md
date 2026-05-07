@@ -154,6 +154,8 @@ Context sync only updates Pi-side bridge state. It does **not** trigger an LLM t
 { "type": "prompt", "message": "look at current selection", "streamingBehavior": "steer" }
 ```
 
+Before sending a prompt, Neovim force-syncs the current editor context and waits for the sync callback. When the synced editor context changes, Pi injects a hidden `pi-nvim-bridge-context-changed` signal into the next LLM context so the agent can decide whether to call `editor_context` for details.
+
 If pi is idle, this starts immediately. If pi is already processing, `streamingBehavior` maps to Pi's `deliverAs` option (`steer` or `followUp`).
 
 ### Disconnect
@@ -168,7 +170,9 @@ Neovim sends this on shutdown so Pi can clear stale editor context and reset the
 
 - Discovery prefers exact `workspaceRoot`, then `cwd`, then most recent live session.
 - Context updates are debounced and deduplicated in Neovim.
+- Prompts sent from Neovim force a fresh context sync before the prompt is delivered.
 - Pi stores only the latest editor snapshot in memory.
+- When the editor snapshot changes, Pi injects one hidden context-change signal into the next LLM context.
 - Active visual selections are injected once through `before_agent_start` as hidden context messages.
 - Detailed synced state is available via `editor_context`.
 

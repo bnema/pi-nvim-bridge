@@ -456,6 +456,7 @@ function M.sync(reason, opts)
   local snapshot = M.snapshot(reason)
   local hash = snapshot_hash(snapshot)
   if not opts.force and hash == M.state.last_hash then
+    if opts.on_done then opts.on_done(nil, nil) end
     return
   end
   M.state.last_hash = hash
@@ -463,11 +464,13 @@ function M.sync(reason, opts)
   M.send_raw(snapshot, function(err, resp)
     if err then
       if opts.notify_errors then notify(err, vim.log.levels.ERROR) end
+      if opts.on_done then opts.on_done(err, resp) end
       return
     end
     if resp and resp.ok == false and opts.notify_errors then
       notify(resp.error or "pi rejected context sync", vim.log.levels.ERROR)
     end
+    if opts.on_done then opts.on_done(err, resp) end
   end)
 end
 
@@ -484,40 +487,48 @@ function M.schedule_sync(reason)
   end))
 end
 
-local function prompt_input(title, streaming_behavior)
-  M.sync("prompt", { force = true })
-  vim.ui.input({ prompt = title or "Pi prompt: " }, function(input)
-    if not input or input == "" then
+local function send_prompt(message, streaming_behavior)
+  M.send_raw({ type = "prompt", message = message, streamingBehavior = streaming_behavior or M.config.default_streaming_behavior }, function(err, resp)
+    if err then
+      notify(err, vim.log.levels.ERROR)
       return
     end
-    M.send_raw({ type = "prompt", message = input, streamingBehavior = streaming_behavior or M.config.default_streaming_behavior }, function(err, resp)
-      if err then
-        notify(err, vim.log.levels.ERROR)
+    if resp and resp.ok then
+      notify("Sent to pi (" .. (streaming_behavior or M.config.default_streaming_behavior) .. ")")
+    else
+      notify("pi error: " .. (resp and resp.error or "unknown"), vim.log.levels.ERROR)
+    end
+  end)
+end
+
+local function with_synced_prompt_context(callback)
+  M.sync("prompt", {
+    force = true,
+    notify_errors = true,
+    on_done = function()
+      callback()
+    end,
+  })
+end
+
+local function prompt_input(title, streaming_behavior)
+  with_synced_prompt_context(function()
+    vim.ui.input({ prompt = title or "Pi prompt: " }, function(input)
+      if not input or input == "" then
         return
       end
-      if resp and resp.ok then
-        notify("Sent to pi (" .. (streaming_behavior or M.config.default_streaming_behavior) .. ")")
-      else
-        notify("pi error: " .. (resp and resp.error or "unknown"), vim.log.levels.ERROR)
-      end
+      send_prompt(input, streaming_behavior)
     end)
   end)
 end
 
 function M.prompt(message, streaming_behavior)
-  M.sync("prompt", { force = true })
   if not message or message == "" then
     prompt_input("Pi prompt: ", streaming_behavior)
     return
   end
-  M.send_raw({ type = "prompt", message = message, streamingBehavior = streaming_behavior or M.config.default_streaming_behavior }, function(err, resp)
-    if err then
-      notify(err, vim.log.levels.ERROR)
-    elseif resp and resp.ok then
-      notify("Sent to pi (" .. (streaming_behavior or M.config.default_streaming_behavior) .. ")")
-    else
-      notify("pi error: " .. (resp and resp.error or "unknown"), vim.log.levels.ERROR)
-    end
+  with_synced_prompt_context(function()
+    send_prompt(message, streaming_behavior)
   end)
 end
 

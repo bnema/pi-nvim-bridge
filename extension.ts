@@ -378,6 +378,32 @@ function buildSelectionContext(snapshot: EditorSnapshot | undefined): string | u
 	].join("\n");
 }
 
+function contextDigest(snapshot: EditorSnapshot | undefined): string | undefined {
+	if (!snapshot) return undefined;
+	return hashText(
+		JSON.stringify({
+			cwd: snapshot.cwd,
+			workspaceRoot: snapshot.workspaceRoot,
+			mode: snapshot.mode,
+			buffer: snapshot.buffer,
+			cursor: snapshot.cursor,
+			selection: snapshot.selection,
+			visibleRange: snapshot.visibleRange,
+			diagnostics: snapshot.diagnostics,
+			diagnosticCounts: snapshot.diagnosticCounts,
+			codediff: snapshot.codediff,
+		}),
+	);
+}
+
+function buildContextChangedSignal(snapshot: EditorSnapshot): string {
+	return [
+		"The Neovim editor context has changed since the last update.",
+		buildSummary(snapshot),
+		"Detailed selection, visible range, diagnostics, and CodeDiff context are available through the editor_context tool.",
+	].join("\n\n");
+}
+
 function clipSection(title: string, text: string | undefined, maxBytes: number): string {
 	if (!text) return `${title}: (none)`;
 	const clipped = truncateUtf8(text, maxBytes);
@@ -444,6 +470,8 @@ export default function (pi: ExtensionAPI) {
 	let manifestPath: string | undefined;
 	let latestCtx: ExtensionContext | undefined;
 	let latestSnapshot: EditorSnapshot | undefined;
+	let latestContextDigest: string | undefined;
+	let lastSignaledContextDigest: string | undefined;
 	let lastInjectedSelectionDigest: string | undefined;
 	let isIdle = true;
 
@@ -483,14 +511,14 @@ export default function (pi: ExtensionAPI) {
 		manifestPath = `${socketPath}.info`;
 	}
 
-	async function handlePrompt(msg: Record<string, unknown>): Promise<void> {
+	function handlePrompt(msg: Record<string, unknown>): void {
 		const message = typeof msg.message === "string" ? msg.message.trim() : "";
 		if (!message) throw new Error("prompt message must be a non-empty string");
 		const deliverAs = normalizeDeliveryMode(msg.streamingBehavior ?? msg.deliverAs);
 		if (isIdle) {
-			await pi.sendUserMessage(message);
+			pi.sendUserMessage(message);
 		} else {
-			await pi.sendUserMessage(message, { deliverAs });
+			pi.sendUserMessage(message, { deliverAs });
 		}
 	}
 
@@ -506,6 +534,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (type === "context_sync" || type === "editor_update") {
 			latestSnapshot = sanitizeSnapshot(parsed, workspaceRoot);
+			latestContextDigest = contextDigest(latestSnapshot);
 			updateStatus(latestSnapshot, latestCtx);
 			respond(conn, { ok: true, type: "context_ack", seq: latestSnapshot.seq, summary: buildSummary(latestSnapshot) });
 			return;
@@ -520,6 +549,8 @@ export default function (pi: ExtensionAPI) {
 			const clientId = typeof parsed.clientId === "string" ? parsed.clientId : undefined;
 			if (!clientId || !latestSnapshot?.clientId || clientId === latestSnapshot.clientId) {
 				latestSnapshot = undefined;
+				latestContextDigest = undefined;
+				lastSignaledContextDigest = undefined;
 				lastInjectedSelectionDigest = undefined;
 				updateStatus(undefined, latestCtx);
 			}
@@ -528,7 +559,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (type === "prompt") {
-			await handlePrompt(parsed);
+			handlePrompt(parsed);
 			respond(conn, { ok: true, type: "prompt_queued", streamingBehavior: normalizeDeliveryMode(parsed.streamingBehavior ?? parsed.deliverAs), idle: isIdle });
 			return;
 		}
@@ -615,6 +646,20 @@ export default function (pi: ExtensionAPI) {
 		isIdle = true;
 		startServer(ctx);
 		updateStatus(latestSnapshot, ctx);
+	});
+
+	pi.on("context", async (event) => {
+		if (!latestSnapshot || !latestContextDigest || latestContextDigest === lastSignaledContextDigest) return;
+		lastSignaledContextDigest = latestContextDigest;
+		const contextSignal: (typeof event.messages)[number] = {
+			role: "custom",
+			customType: "pi-nvim-bridge-context-changed",
+			content: buildContextChangedSignal(latestSnapshot),
+			display: false,
+			details: { digest: latestContextDigest, snapshotUpdatedAt: latestSnapshot.updatedAt },
+			timestamp: Date.now(),
+		};
+		return { messages: [...event.messages, contextSignal] };
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
