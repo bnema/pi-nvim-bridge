@@ -31,9 +31,35 @@ Install the Neovim side with `lazy.nvim`:
 }
 ```
 
-## Use
+## Commands
 
-Select code in Neovim, then ask Pi about it. Or ask Pi to call `editor_context` for the latest synced snapshot.
+Neovim commands:
+
+```vim
+:PiNvimBridgeSync
+:PiNvimBridgePrompt <message>
+:PiNvimBridgeSteer <message>
+:PiNvimBridgeFollowUp <message>
+:PiNvimBridgePing
+:PiNvimBridgeSessions
+```
+
+## Pi tool
+
+Use `editor_context` to inspect the latest synced snapshot:
+
+```json
+{
+  "include": "summary",
+  "maxBytes": 12000
+}
+```
+
+`include` can request summary, selection, visible range, diagnostics, or all available context.
+
+## Protocol notes
+
+The Neovim side discovers active Pi sessions from `/tmp/pi-nvim-bridge-sockets/*.info`. It sends newline-delimited JSON messages for `context_sync`, `prompt`, `get_context`, `ping`, and `disconnect`. Context sync does not trigger an LLM turn; prompts do.
 
 ## Develop
 
