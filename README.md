@@ -31,6 +31,8 @@ Install the Neovim side with `lazy.nvim`:
 }
 ```
 
+Do not lazy-load this plugin only with `cmd` or `keys`: automatic context sync starts when the plugin loads. Keep the file-open `event` trigger above, or set `lazy = false` for eager loading.
+
 ## Commands
 
 Neovim commands:
