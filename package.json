@@ -1,12 +1,12 @@
 {
   "name": "pi-nvim-bridge",
   "version": "0.1.0",
-  "description": "Automatic context bridge between pi coding agent sessions and Neovim.",
+  "description": "Sync Neovim editor context into active Pi sessions.",
   "keywords": [
-    "pi-package",
+    "pi",
     "pi-extension",
     "neovim",
-    "nvim"
+    "editor-context"
   ],
   "type": "module",
   "license": "MIT",
